@@ -10,6 +10,7 @@ const BatchWriter = require('./storage/batchWriter');
 const StorageManager = require('./storage/storageManager');
 const metricsCollector = require('./monitoring/metricsCollector');
 const { v4: uuidv4 } = require('uuid');
+const path = require('path');
 require('dotenv').config();
 
 const app = express();
@@ -257,4 +258,9 @@ app.get('/metrics/top-services', (req, res) => {
     res.json({
         top_services: metricsCollector.getTopServices(limit)
     });
+});
+
+// Dashboard endpoint
+app.get('/dashboard', (req, res) => {
+    res.sendFile(path.join(__dirname, 'monitoring', 'dashboard.html'));
 });

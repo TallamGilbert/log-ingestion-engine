@@ -9,6 +9,7 @@ const SQLiteStorage = require('./storage/sqliteStorage');
 const BatchWriter = require('./storage/batchWriter');
 const StorageManager = require('./storage/storageManager');
 const metricsCollector = require('./monitoring/metricsCollector');
+const alertManager = require('./monitoring/alertManager');
 const { v4: uuidv4 } = require('uuid');
 const path = require('path');
 require('dotenv').config();
@@ -249,6 +250,8 @@ module.exports = app;
 
 // Metrics endpoint
 app.get('/metrics', (req, res) => {
+    // Check alerts
+    alertManager.checkAll(metricsCollector.getMetrics());
     res.json(metricsCollector.getMetrics());
 });
 
@@ -263,4 +266,27 @@ app.get('/metrics/top-services', (req, res) => {
 // Dashboard endpoint
 app.get('/dashboard', (req, res) => {
     res.sendFile(path.join(__dirname, 'monitoring', 'dashboard.html'));
+});
+
+// Alerts endpoint
+app.get('/alerts', (req, res) => {
+    res.json({
+        active: alertManager.getActiveAlerts(),
+        stats: alertManager.getStats()
+    });
+});
+
+// Alert history endpoint
+app.get('/alerts/history', (req, res) => {
+    res.json(alertManager.getAlertHistory());
+});
+
+// Acknowledge alert
+app.post('/alerts/:id/acknowledge', (req, res) => {
+    const acknowledged = alertManager.acknowledgeAlert(req.params.id);
+    if (acknowledged) {
+        res.json({ status: 'acknowledged', id: req.params.id });
+    } else {
+        res.status(404).json({ error: 'Alert not found' });
+    }
 });

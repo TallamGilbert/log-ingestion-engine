@@ -1,15 +1,23 @@
 const SQLiteStorage = require('../../src/storage/sqliteStorage');
 const BatchWriter = require('../../src/storage/batchWriter');
+const fs = require('fs');
 
 describe('SQLiteStorage', () => {
     let storage;
+    let testDbPath;
     
     beforeEach(() => {
-        storage = new SQLiteStorage({ dbPath: './test-data' });
+        // Use unique path for each test
+        testDbPath = `./test-data-${Date.now()}-${Math.random()}`;
+        storage = new SQLiteStorage({ dbPath: testDbPath });
     });
 
     afterEach(() => {
         storage.close();
+        // Clean up test database
+        if (fs.existsSync(testDbPath)) {
+            fs.rmSync(testDbPath, { recursive: true, force: true });
+        }
     });
 
     test('inserts log correctly', () => {
@@ -58,15 +66,20 @@ describe('SQLiteStorage', () => {
 describe('BatchWriter', () => {
     let storage;
     let writer;
+    let testDbPath;
     
     beforeEach(() => {
-        storage = new SQLiteStorage({ dbPath: './test-data' });
+        testDbPath = `./test-data-${Date.now()}-${Math.random()}`;
+        storage = new SQLiteStorage({ dbPath: testDbPath });
         writer = new BatchWriter(storage, 2, 1000);
     });
 
     afterEach(() => {
         writer.stop();
         storage.close();
+        if (fs.existsSync(testDbPath)) {
+            fs.rmSync(testDbPath, { recursive: true, force: true });
+        }
     });
 
     test('flushes when batch size reached', async () => {

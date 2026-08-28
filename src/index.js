@@ -21,10 +21,8 @@ const PORT = process.env.PORT || 8080;
 const RateLimiter = RateLimiterModule.RateLimiter || RateLimiterModule;
 const rateLimiter = RateLimiterModule.instance || new RateLimiter();
 
-// Create queue manager
+// Create managers
 const queueManager = new QueueManager();
-
-// Create storage manager
 const storageManager = new StorageManager();
 
 // Create channel
@@ -33,12 +31,10 @@ const consumerBatchSize = parseInt(process.env.CONSUMER_BATCH_SIZE || '50');
 const channelTimeoutMs = parseInt(process.env.CHANNEL_TIMEOUT_MS || '100');
 const rawLogsChannel = new LogChannel(channelBufferSize, consumerBatchSize, channelTimeoutMs);
 
-// Initialize queue manager
+// Initialize managers
 queueManager.initialize().catch(error => {
     console.error('Failed to initialize queue manager:', error);
 });
-
-// Start storage manager
 storageManager.start();
 
 // Middleware
@@ -48,7 +44,6 @@ app.use(rateLimiter.middleware.bind(rateLimiter));
 // Routes
 app.post('/logs', async (req, res) => {
     try {
-        // Check content type
         if (!req.is('application/json')) {
             return res.status(415).json({
                 error: 'Unsupported Media Type',
@@ -56,7 +51,6 @@ app.post('/logs', async (req, res) => {
             });
         }
 
-        // Check if body is array
         if (!Array.isArray(req.body)) {
             return res.status(400).json({
                 error: 'Bad Request',
@@ -64,10 +58,8 @@ app.post('/logs', async (req, res) => {
             });
         }
 
-        // Validate logs
         const { validLogs, invalidLogs } = LogValidator.validateBatch(req.body);
 
-        // If all logs are invalid, return error
         if (validLogs.length === 0 && invalidLogs.length > 0) {
             return res.status(400).json({
                 error: 'Validation failed',
@@ -78,7 +70,7 @@ app.post('/logs', async (req, res) => {
             });
         }
 
-        // Enrich valid logs
+        // Enrich logs
         const enrichedLogs = enricher.enrichBatch(validLogs, {
             headers: req.headers,
             socket: req.socket,
@@ -86,39 +78,43 @@ app.post('/logs', async (req, res) => {
             ip: req.ip
         });
 
-        // Route logs to destinations
+        // Record metrics
+        metricsCollector.recordBatch(enrichedLogs);
+
+        // Route logs
         const routedLogs = router.routeBatch(enrichedLogs);
 
-        // Publish to queues for each destination
+        // Publish to queues
         for (const [destination, logs] of Object.entries(routedLogs)) {
-            await queueManager.publishBatch(logs, destination);
+            try {
+                await queueManager.publishBatch(logs, destination);
+            } catch (error) {
+                console.error(`Failed to publish to ${destination}:`, error.message);
+            }
         }
 
         // Write to storage
         for (const [destination, logs] of Object.entries(routedLogs)) {
-            await storageManager.writeBatch(destination, logs);
+            try {
+                await storageManager.writeBatch(destination, logs);
+            } catch (error) {
+                console.error(`Failed to write to ${destination}:`, error.message);
+            }
         }
 
-        // Record metrics
-        metricsCollector.recordBatch(enrichedLogs);
-
-        // Push to channel for processing
+        // Push to channel
         const pushedCount = rawLogsChannel.pushBatch(enrichedLogs);
-        
-        // If channel is full, return 503
+
         if (pushedCount < enrichedLogs.length) {
             return res.status(503).json({
                 error: 'ingestion overloaded',
-                message: 'Channel buffer is full. Please try again later.',
+                message: 'Channel buffer is full',
                 acceptedCount: pushedCount,
                 rejectedCount: enrichedLogs.length - pushedCount
             });
         }
 
-        // Generate batch ID
         const batchId = uuidv4();
-
-        // Return response
         const response = {
             status: 'accepted',
             batchId: batchId,
@@ -143,10 +139,10 @@ app.post('/logs', async (req, res) => {
     }
 });
 
-// Health check endpoint
+// Monitoring endpoints
 app.get('/health', (req, res) => {
-    res.json({ 
-        status: 'healthy', 
+    res.json({
+        status: 'healthy',
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
         channelBufferSize: rawLogsChannel.getBufferSize(),
@@ -156,22 +152,55 @@ app.get('/health', (req, res) => {
     });
 });
 
-// Queue status endpoint
+app.get('/metrics', (req, res) => {
+    const metrics = metricsCollector.getMetrics();
+    alertManager.checkAll(metrics, storageManager.getStats().deadLetters);
+    res.json(metrics);
+});
+
+app.get('/metrics/top-services', (req, res) => {
+    const limit = parseInt(req.query.limit || '5');
+    res.json({
+        top_services: metricsCollector.getTopServices(limit)
+    });
+});
+
+app.get('/dashboard', (req, res) => {
+    res.sendFile(path.join(__dirname, 'monitoring', 'dashboard.html'));
+});
+
+app.get('/alerts', (req, res) => {
+    res.json({
+        active: alertManager.getActiveAlerts(),
+        stats: alertManager.getStats()
+    });
+});
+
+app.get('/alerts/history', (req, res) => {
+    res.json(alertManager.getAlertHistory());
+});
+
+app.post('/alerts/:id/acknowledge', (req, res) => {
+    const acknowledged = alertManager.acknowledgeAlert(req.params.id);
+    if (acknowledged) {
+        res.json({ status: 'acknowledged', id: req.params.id });
+    } else {
+        res.status(404).json({ error: 'Alert not found' });
+    }
+});
+
 app.get('/queue/status', (req, res) => {
     res.json(queueManager.getStatus());
 });
 
-// Channel statistics endpoint
 app.get('/channel/stats', (req, res) => {
     res.json(rawLogsChannel.getStats());
 });
 
-// Enrichment statistics endpoint
 app.get('/enrichment/stats', (req, res) => {
     res.json(enricher.getStats());
 });
 
-// Routing rules endpoint
 app.get('/routing/rules', (req, res) => {
     res.json({
         rules: router.getRules(),
@@ -179,7 +208,6 @@ app.get('/routing/rules', (req, res) => {
     });
 });
 
-// Reload routing rules
 app.post('/routing/reload', (req, res) => {
     router.reloadRules();
     res.json({
@@ -188,7 +216,6 @@ app.post('/routing/reload', (req, res) => {
     });
 });
 
-// Storage stats endpoint
 app.get('/storage/stats', (req, res) => {
     res.json(storageManager.getStats());
 });
@@ -201,7 +228,7 @@ app.use((req, res) => {
     });
 });
 
-// Error handling middleware
+// Error handler
 app.use((err, req, res, next) => {
     if (err.type === 'entity.parse.failed' || err instanceof SyntaxError) {
         return res.status(400).json({
@@ -209,22 +236,16 @@ app.use((err, req, res, next) => {
             message: 'Malformed JSON in request body'
         });
     }
-    
     if (err.type === 'entity.too.large') {
         return res.status(413).json({
             error: 'Payload Too Large',
             message: 'Maximum payload size is 1MB'
         });
     }
-    
     console.error('Unexpected error:', err);
-    const message = process.env.NODE_ENV === 'production' 
-        ? 'Internal Server Error' 
-        : err.message;
-    
     res.status(err.status || 500).json({
         error: 'Internal Server Error',
-        message: message
+        message: err.message
     });
 });
 
@@ -236,57 +257,22 @@ process.on('SIGINT', async () => {
     process.exit(0);
 });
 
-// Start server
 if (require.main === module) {
     app.listen(PORT, () => {
         console.log(`Log Ingestion Engine running on port ${PORT}`);
         console.log(`Channel buffer size: ${channelBufferSize}`);
-        console.log(`Consumer batch size: ${consumerBatchSize}`);
         console.log(`Rate limit: ${rateLimiter.rateLimit} requests/sec`);
+        console.log('Available endpoints:');
+        console.log('  POST /logs - Ingest logs');
+        console.log('  GET /health - Health check');
+        console.log('  GET /metrics - Metrics');
+        console.log('  GET /dashboard - Dashboard');
+        console.log('  GET /alerts - Alerts');
+        console.log('  GET /queue/status - Queue status');
+        console.log('  GET /channel/stats - Channel stats');
+        console.log('  GET /storage/stats - Storage stats');
+        console.log('  GET /routing/rules - Routing rules');
     });
 }
 
 module.exports = app;
-
-// Metrics endpoint
-app.get('/metrics', (req, res) => {
-    // Check alerts
-    alertManager.checkAll(metricsCollector.getMetrics());
-    res.json(metricsCollector.getMetrics());
-});
-
-// Top services endpoint
-app.get('/metrics/top-services', (req, res) => {
-    const limit = parseInt(req.query.limit || '5');
-    res.json({
-        top_services: metricsCollector.getTopServices(limit)
-    });
-});
-
-// Dashboard endpoint
-app.get('/dashboard', (req, res) => {
-    res.sendFile(path.join(__dirname, 'monitoring', 'dashboard.html'));
-});
-
-// Alerts endpoint
-app.get('/alerts', (req, res) => {
-    res.json({
-        active: alertManager.getActiveAlerts(),
-        stats: alertManager.getStats()
-    });
-});
-
-// Alert history endpoint
-app.get('/alerts/history', (req, res) => {
-    res.json(alertManager.getAlertHistory());
-});
-
-// Acknowledge alert
-app.post('/alerts/:id/acknowledge', (req, res) => {
-    const acknowledged = alertManager.acknowledgeAlert(req.params.id);
-    if (acknowledged) {
-        res.json({ status: 'acknowledged', id: req.params.id });
-    } else {
-        res.status(404).json({ error: 'Alert not found' });
-    }
-});

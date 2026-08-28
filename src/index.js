@@ -3,6 +3,7 @@ const LogValidator = require('./validation/logValidator');
 const rateLimiterModule = require('./middleware/rateLimiter');
 const { LogChannel } = require('./ingestion/channel');
 const enricher = require('./ingestion/enricher');
+const router = require('./routing/router');
 const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 
@@ -161,3 +162,20 @@ if (require.main === module) {
 }
 
 module.exports = app;
+
+// Routing rules endpoint
+app.get('/routing/rules', (req, res) => {
+    res.json({
+        rules: router.getRules(),
+        defaultDestination: router.defaultDestination
+    });
+});
+
+// Reload routing rules
+app.post('/routing/reload', (req, res) => {
+    router.reloadRules();
+    res.json({
+        status: 'reloaded',
+        rules: router.getRules()
+    });
+});

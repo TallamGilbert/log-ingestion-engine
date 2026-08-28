@@ -1,0 +1,24 @@
+# Routing rules configuration
+rules:
+  - name: "route-errors-to-service1"
+    condition:
+      field: "level"
+      operator: "equals"
+      value: "ERROR"
+    destination: "service1"
+  
+  - name: "route-warnings-to-service2"
+    condition:
+      field: "level"
+      operator: "equals"
+      value: "WARN"
+    destination: "service2"
+  
+  - name: "default-route"
+    condition:
+      field: "level"
+      operator: "contains"
+      value: "INFO"
+    destination: "service3"
+
+default_destination: "service3"

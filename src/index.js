@@ -2,6 +2,7 @@ const express = require('express');
 const LogValidator = require('./validation/logValidator');
 const rateLimiterModule = require('./middleware/rateLimiter');
 const { LogChannel } = require('./ingestion/channel');
+const enricher = require('./ingestion/enricher');
 const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 
@@ -54,8 +55,16 @@ app.post('/logs', (req, res) => {
             });
         }
 
-        // Push valid logs to channel
-        const pushedCount = rawLogsChannel.pushBatch(validLogs);
+        // Enrich valid logs
+        const enrichedLogs = enricher.enrichBatch(validLogs, {
+            headers: req.headers,
+            socket: req.socket,
+            connection: req.connection,
+            ip: req.ip
+        });
+
+        // Push enriched logs to channel
+        const pushedCount = rawLogsChannel.pushBatch(enrichedLogs);
         
         // If channel is full, return 503
         if (pushedCount < validLogs.length) {
@@ -107,6 +116,10 @@ app.get('/health', (req, res) => {
 });
 
 // Channel statistics endpoint
+// Enrichment statistics endpoint
+app.get('/enrichment/stats', (req, res) => {
+    res.json(enricher.getStats());
+});
 app.get('/channel/stats', (req, res) => {
     res.json(rawLogsChannel.getStats());
 });

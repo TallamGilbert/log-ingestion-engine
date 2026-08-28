@@ -1,7 +1,7 @@
-// src/index.js
+// src/index.js (updated)
 const express = require('express');
 const rateLimit = require('./middleware/rateLimiter');
-const { validateLogs } = require('./validation/logValidator');
+const LogValidator = require('./validation/logValidator');
 const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 
@@ -10,7 +10,6 @@ const PORT = process.env.PORT || 8080;
 
 // Middleware
 app.use(express.json({ limit: '1mb' }));
-app.use(rateLimit.middleware);
 
 // Routes
 app.post('/logs', (req, res) => {
@@ -23,15 +22,6 @@ app.post('/logs', (req, res) => {
             });
         }
 
-        // Validate payload size (1MB)
-        const contentLength = parseInt(req.headers['content-length'] || '0');
-        if (contentLength > 1024 * 1024) {
-            return res.status(413).json({
-                error: 'Payload Too Large',
-                message: 'Maximum payload size is 1MB'
-            });
-        }
-
         // Check if body is array
         if (!Array.isArray(req.body)) {
             return res.status(400).json({
@@ -40,17 +30,44 @@ app.post('/logs', (req, res) => {
             });
         }
 
+        // Validate logs
+        const { validLogs, invalidLogs } = LogValidator.validateBatch(req.body);
+
+        // If all logs are invalid, return error
+        if (validLogs.length === 0 && invalidLogs.length > 0) {
+            return res.status(400).json({
+                error: 'Validation failed',
+                details: invalidLogs.map(item => ({
+                    index: item.index,
+                    errors: item.errors
+                }))
+            });
+        }
+
         // Generate batch ID
         const batchId = uuidv4();
 
-        // Return success
-        return res.status(202).json({
+        // Process valid logs (to be implemented in later phases)
+        // For now, just acknowledge receipt
+        
+        // Return response with partial acceptance info if needed
+        const response = {
             status: 'accepted',
-            batchId: batchId
-        });
+            batchId: batchId,
+            acceptedCount: validLogs.length
+        };
+
+        if (invalidLogs.length > 0) {
+            response.rejectedCount = invalidLogs.length;
+            response.rejectedLogs = invalidLogs.map(item => ({
+                index: item.index,
+                errors: item.errors
+            }));
+        }
+
+        return res.status(202).json(response);
 
     } catch (error) {
-        // Handle malformed JSON
         if (error instanceof SyntaxError) {
             return res.status(400).json({
                 error: 'Bad Request',
@@ -63,26 +80,6 @@ app.post('/logs', (req, res) => {
             error: 'Internal Server Error'
         });
     }
-});
-
-// Health check endpoint
-app.get('/health', (req, res) => {
-    res.json({ status: 'healthy', timestamp: new Date().toISOString() });
-});
-
-// Error handling middleware
-app.use((err, req, res, next) => {
-    console.error('Error:', err);
-    res.status(500).json({
-        error: 'Internal Server Error',
-        message: err.message
-    });
-});
-
-// Start server
-app.listen(PORT, () => {
-    console.log(`Log Ingestion Engine running on port ${PORT}`);
-    console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
 });
 
 module.exports = app;

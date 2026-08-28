@@ -8,6 +8,7 @@ const QueueManager = require('./storage/queueManager');
 const SQLiteStorage = require('./storage/sqliteStorage');
 const BatchWriter = require('./storage/batchWriter');
 const StorageManager = require('./storage/storageManager');
+const metricsCollector = require('./monitoring/metricsCollector');
 const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 
@@ -95,6 +96,9 @@ app.post('/logs', async (req, res) => {
         for (const [destination, logs] of Object.entries(routedLogs)) {
             await storageManager.writeBatch(destination, logs);
         }
+
+        // Record metrics
+        metricsCollector.recordBatch(enrichedLogs);
 
         // Push to channel for processing
         const pushedCount = rawLogsChannel.pushBatch(enrichedLogs);
@@ -241,3 +245,16 @@ if (require.main === module) {
 }
 
 module.exports = app;
+
+// Metrics endpoint
+app.get('/metrics', (req, res) => {
+    res.json(metricsCollector.getMetrics());
+});
+
+// Top services endpoint
+app.get('/metrics/top-services', (req, res) => {
+    const limit = parseInt(req.query.limit || '5');
+    res.json({
+        top_services: metricsCollector.getTopServices(limit)
+    });
+});

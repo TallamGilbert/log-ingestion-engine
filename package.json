@@ -11,9 +11,16 @@
     "test:integration": "jest tests/integration",
     "test:load": "node tests/load/load-test.js",
     "lint": "eslint src/",
-    "format": "prettier --write src/"
+    "format": "prettier --write src/",
+    "load:test": "node tests/load/load-test.js",
+    "load:test:1000": "CONCURRENT=20 REQUESTS=50 node tests/load/load-test.js"
   },
-  "keywords": ["logging", "observability", "microservices", "rabbitmq"],
+  "keywords": [
+    "logging",
+    "observability",
+    "microservices",
+    "rabbitmq"
+  ],
   "author": "Your Name",
   "license": "MIT",
   "dependencies": {

@@ -217,3 +217,12 @@ if (require.main === module) {
 }
 
 module.exports = app;
+
+// Initialize SQLite storage and batch writer
+const SQLiteStorage = require('./storage/sqliteStorage');
+const BatchWriter = require('./storage/batchWriter');
+const storage = new SQLiteStorage();
+const batchWriter = new BatchWriter(storage, 100, 1000);
+
+// Start batch writer
+batchWriter.start();

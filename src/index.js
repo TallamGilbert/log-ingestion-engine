@@ -1,19 +1,28 @@
 const express = require('express');
 const LogValidator = require('./validation/logValidator');
-const RateLimiter = require('./middleware/rateLimiter');
+const RateLimiterModule = require('./middleware/rateLimiter');
 const { LogChannel } = require('./ingestion/channel');
 const enricher = require('./ingestion/enricher');
 const router = require('./routing/router');
 const QueueManager = require('./storage/queueManager');
+const SQLiteStorage = require('./storage/sqliteStorage');
+const BatchWriter = require('./storage/batchWriter');
+const StorageManager = require('./storage/storageManager');
 const { v4: uuidv4 } = require('uuid');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// Create instances
-const rateLimiter = RateLimiter.instance || new RateLimiter();
+// Get RateLimiter class and instance
+const RateLimiter = RateLimiterModule.RateLimiter || RateLimiterModule;
+const rateLimiter = RateLimiterModule.instance || new RateLimiter();
+
+// Create queue manager
 const queueManager = new QueueManager();
+
+// Create storage manager
+const storageManager = new StorageManager();
 
 // Create channel
 const channelBufferSize = parseInt(process.env.CHANNEL_BUFFER_SIZE || '10000');
@@ -25,6 +34,9 @@ const rawLogsChannel = new LogChannel(channelBufferSize, consumerBatchSize, chan
 queueManager.initialize().catch(error => {
     console.error('Failed to initialize queue manager:', error);
 });
+
+// Start storage manager
+storageManager.start();
 
 // Middleware
 app.use(express.json({ limit: '1mb' }));
@@ -79,6 +91,11 @@ app.post('/logs', async (req, res) => {
             await queueManager.publishBatch(logs, destination);
         }
 
+        // Write to storage
+        for (const [destination, logs] of Object.entries(routedLogs)) {
+            await storageManager.writeBatch(destination, logs);
+        }
+
         // Push to channel for processing
         const pushedCount = rawLogsChannel.pushBatch(enrichedLogs);
         
@@ -128,7 +145,8 @@ app.get('/health', (req, res) => {
         uptime: process.uptime(),
         channelBufferSize: rawLogsChannel.getBufferSize(),
         channelUtilization: rawLogsChannel.getStats().utilizationPercent,
-        queueStatus: queueManager.getStatus()
+        queueStatus: queueManager.getStatus(),
+        storageStats: storageManager.getStats()
     });
 });
 
@@ -162,6 +180,11 @@ app.post('/routing/reload', (req, res) => {
         status: 'reloaded',
         rules: router.getRules()
     });
+});
+
+// Storage stats endpoint
+app.get('/storage/stats', (req, res) => {
+    res.json(storageManager.getStats());
 });
 
 // 404 handler
@@ -203,6 +226,7 @@ app.use((err, req, res, next) => {
 process.on('SIGINT', async () => {
     console.log('Shutting down...');
     await queueManager.close();
+    storageManager.stop();
     process.exit(0);
 });
 
@@ -217,12 +241,3 @@ if (require.main === module) {
 }
 
 module.exports = app;
-
-// Initialize SQLite storage and batch writer
-const SQLiteStorage = require('./storage/sqliteStorage');
-const BatchWriter = require('./storage/batchWriter');
-const storage = new SQLiteStorage();
-const batchWriter = new BatchWriter(storage, 100, 1000);
-
-// Start batch writer
-batchWriter.start();

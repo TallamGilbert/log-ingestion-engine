@@ -1,29 +1,25 @@
-// src/middleware/rateLimiter.js
 class TokenBucket {
     constructor(capacity, refillRate) {
         this.capacity = capacity;
         this.tokens = capacity;
-        this.refillRate = refillRate; // tokens per second
+        this.refillRate = refillRate;
         this.lastRefill = Date.now();
     }
 
     refill() {
         const now = Date.now();
-        const timePassed = (now - this.lastRefill) / 1000; // in seconds
+        const timePassed = (now - this.lastRefill) / 1000;
         const tokensToAdd = timePassed * this.refillRate;
-        
         this.tokens = Math.min(this.capacity, this.tokens + tokensToAdd);
         this.lastRefill = now;
     }
 
     tryConsume(tokens = 1) {
         this.refill();
-        
         if (this.tokens >= tokens) {
             this.tokens -= tokens;
             return true;
         }
-        
         return false;
     }
 
@@ -36,8 +32,19 @@ class TokenBucket {
 class RateLimiter {
     constructor(rateLimit = 1000) {
         this.rateLimit = rateLimit;
-        this.buckets = new Map(); // Map of IP -> TokenBucket
-        this.cleanupInterval = setInterval(() => this.cleanup(), 60000); // Cleanup every minute
+        this.buckets = new Map();
+        this.cleanupInterval = setInterval(() => this.cleanup(), 60000);
+        if (this.cleanupInterval.unref) {
+            this.cleanupInterval.unref();
+        }
+    }
+
+    getClientIp(req) {
+        const forwardedFor = req.headers && req.headers['x-forwarded-for'];
+        if (forwardedFor) {
+            return forwardedFor.split(',')[0].trim();
+        }
+        return req.ip || req.connection?.remoteAddress || req.socket?.remoteAddress || 'unknown';
     }
 
     getBucket(ip) {
@@ -48,11 +55,10 @@ class RateLimiter {
     }
 
     middleware(req, res, next) {
-        const ip = req.ip || req.connection.remoteAddress;
+        const ip = this.getClientIp(req);
         const bucket = this.getBucket(ip);
         
         if (bucket.tryConsume()) {
-            // Set rate limit headers
             res.setHeader('X-RateLimit-Limit', this.rateLimit);
             res.setHeader('X-RateLimit-Remaining', Math.floor(bucket.getTokens()));
             next();
@@ -69,25 +75,21 @@ class RateLimiter {
     cleanup() {
         const now = Date.now();
         for (const [ip, bucket] of this.buckets.entries()) {
-            // Remove buckets that haven't been used in 5 minutes
             if (now - bucket.lastRefill > 300000) {
                 this.buckets.delete(ip);
             }
         }
     }
-
-    getStatus(ip) {
-        const bucket = this.getBucket(ip);
-        return {
-            tokens: bucket.getTokens(),
-            capacity: bucket.capacity,
-            refillRate: bucket.refillRate
-        };
-    }
 }
 
-// Create singleton instance
-const rateLimit = parseInt(process.env.RATE_LIMIT || '1000');
-const rateLimiter = new RateLimiter(rateLimit);
+// Export the class as default
+module.exports = RateLimiter;
 
-module.exports = rateLimiter;
+// Also export as named export
+module.exports.RateLimiter = RateLimiter;
+module.exports.TokenBucket = TokenBucket;
+
+// Create and attach singleton instance
+const rateLimit = parseInt(process.env.RATE_LIMIT || '1000');
+module.exports.instance = new RateLimiter(rateLimit);
+module.exports.default = module.exports.instance;

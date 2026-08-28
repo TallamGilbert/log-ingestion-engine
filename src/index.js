@@ -1,6 +1,6 @@
 const express = require('express');
 const LogValidator = require('./validation/logValidator');
-const rateLimiterModule = require('./middleware/rateLimiter');
+const RateLimiter = require('./middleware/rateLimiter');
 const { LogChannel } = require('./ingestion/channel');
 const enricher = require('./ingestion/enricher');
 const router = require('./routing/router');
@@ -10,8 +10,8 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-// Get the singleton instance
-const rateLimiter = rateLimiterModule.instance || rateLimiterModule.default;
+// Create rate limiter instance
+const rateLimiter = RateLimiter.instance || new RateLimiter();
 
 // Create channel
 const channelBufferSize = parseInt(process.env.CHANNEL_BUFFER_SIZE || '10000');
@@ -64,16 +64,20 @@ app.post('/logs', (req, res) => {
             ip: req.ip
         });
 
+        // Route logs (for now, just count them)
+        const routedLogs = router.routeBatch(enrichedLogs);
+        const totalRouted = Object.values(routedLogs).reduce((sum, logs) => sum + logs.length, 0);
+
         // Push enriched logs to channel
         const pushedCount = rawLogsChannel.pushBatch(enrichedLogs);
         
         // If channel is full, return 503
-        if (pushedCount < validLogs.length) {
+        if (pushedCount < enrichedLogs.length) {
             return res.status(503).json({
                 error: 'ingestion overloaded',
                 message: 'Channel buffer is full. Please try again later.',
                 acceptedCount: pushedCount,
-                rejectedCount: validLogs.length - pushedCount
+                rejectedCount: enrichedLogs.length - pushedCount
             });
         }
 
@@ -84,7 +88,7 @@ app.post('/logs', (req, res) => {
         const response = {
             status: 'accepted',
             batchId: batchId,
-            acceptedCount: validLogs.length
+            acceptedCount: enrichedLogs.length
         };
 
         if (invalidLogs.length > 0) {
@@ -117,12 +121,38 @@ app.get('/health', (req, res) => {
 });
 
 // Channel statistics endpoint
+app.get('/channel/stats', (req, res) => {
+    res.json(rawLogsChannel.getStats());
+});
+
 // Enrichment statistics endpoint
 app.get('/enrichment/stats', (req, res) => {
     res.json(enricher.getStats());
 });
-app.get('/channel/stats', (req, res) => {
-    res.json(rawLogsChannel.getStats());
+
+// Routing rules endpoint
+app.get('/routing/rules', (req, res) => {
+    res.json({
+        rules: router.getRules(),
+        defaultDestination: router.defaultDestination
+    });
+});
+
+// Reload routing rules
+app.post('/routing/reload', (req, res) => {
+    router.reloadRules();
+    res.json({
+        status: 'reloaded',
+        rules: router.getRules()
+    });
+});
+
+// 404 handler
+app.use((req, res) => {
+    res.status(404).json({
+        error: 'Not Found',
+        message: 'The requested endpoint does not exist'
+    });
 });
 
 // Error handling middleware
@@ -158,24 +188,8 @@ if (require.main === module) {
         console.log(`Log Ingestion Engine running on port ${PORT}`);
         console.log(`Channel buffer size: ${channelBufferSize}`);
         console.log(`Consumer batch size: ${consumerBatchSize}`);
+        console.log(`Rate limit: ${rateLimiter.rateLimit} requests/sec`);
     });
 }
 
 module.exports = app;
-
-// Routing rules endpoint
-app.get('/routing/rules', (req, res) => {
-    res.json({
-        rules: router.getRules(),
-        defaultDestination: router.defaultDestination
-    });
-});
-
-// Reload routing rules
-app.post('/routing/reload', (req, res) => {
-    router.reloadRules();
-    res.json({
-        status: 'reloaded',
-        rules: router.getRules()
-    });
-});

@@ -15,8 +15,6 @@ class LogChannel extends EventEmitter {
             droppedLogs: 0,
             lastBatchTime: null
         };
-        
-        this.on('consume', this.consumeBatch.bind(this));
     }
 
     push(log) {
@@ -28,7 +26,8 @@ class LogChannel extends EventEmitter {
         this.buffer.push(log);
         this.stats.totalPushed++;
         
-        if (this.buffer.length >= this.batchSize) {
+        // Only emit consume if buffer reaches batch size AND we're not already processing
+        if (this.buffer.length >= this.batchSize && !this.isProcessing) {
             this.emit('consume');
         }
         
@@ -77,6 +76,13 @@ class LogChannel extends EventEmitter {
             utilizationPercent: (this.buffer.length / this.bufferSize) * 100
         };
     }
+
+    clear() {
+        this.buffer = [];
+        this.stats.totalPushed = 0;
+        this.stats.totalConsumed = 0;
+        this.stats.droppedLogs = 0;
+    }
 }
 
 class LogConsumer {
@@ -96,6 +102,10 @@ class LogConsumer {
         this.interval = setInterval(() => {
             this.processBufferedLogs();
         }, this.intervalMs);
+        
+        if (this.interval.unref) {
+            this.interval.unref();
+        }
         
         this.channel.on('consume', () => {
             this.processBufferedLogs();
